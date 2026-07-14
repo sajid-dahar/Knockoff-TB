@@ -1,5 +1,5 @@
 # =============================================================================
-# FIGURE 1 — Google Colab (self-contained, copy this entire file into Colab)
+# FIGURE 1 — Visualization
 # =============================================================================
 # Cell 1:
 #   !pip install -q umap-learn pandas matplotlib seaborn scikit-learn
@@ -30,12 +30,6 @@ sns.set_theme(style="whitegrid", context="paper", font_scale=1.0)
 DATA_ROOT = Path("/content")  # CSVs in /content after upload
 # DATA_ROOT = Path("/content/drive/MyDrive/TB analysis")  # or Google Drive
 
-GAM_TRAIN_CSV = DATA_ROOT / "GAM_train.csv"
-Y_TRAIN_CSV   = DATA_ROOT / "Y9_train.csv"
-Y_TEST_CSV    = DATA_ROOT / "Y_test.csv"
-GENOMES_CSV   = DATA_ROOT / "GENOMES.csv"
-OUT_DIR       = Path("/content/figure1_outputs")
-ID_COL        = "ID"
 
 # Panel G: 7 drugs — AMIKACIN replaces LEVOFLOXACIN
 DRUG_UMAP_DRUGS = [
@@ -163,21 +157,7 @@ def make_figure(data, emb, n_pca, out_dir):
                            height_ratios=[0.55, 2.4, 1.0, 0.12, 1.55],
                            hspace=0.38, wspace=0.32)
 
-    # A — workflow
-    ax = fig.add_subplot(gs[0, 0])
-    ax.set_xlim(0, 10); ax.set_ylim(0, 4); ax.axis("off")
-    ax.set_title("A  Study workflow", loc="left", fontweight="bold", fontsize=11)
-    for x, y, w, h, lbl in [
-        (0.2, 1.8, 2.2, 1.2, "CryPTIC\nWGS"),
-        (2.8, 1.8, 2.4, 1.2, "Binary mutation\nmatrix (0/1)"),
-        (5.6, 1.8, 2.2, 1.2, "Drug\nphenotypes"),
-        (8.0, 1.8, 1.8, 1.2, "Knockoff-\nML"),
-    ]:
-        ax.add_patch(plt.Rectangle((x, y), w, h, facecolor="#E8F0FE", edgecolor="#3366CC", lw=1.2))
-        ax.text(x + w / 2, y + h / 2, lbl, ha="center", va="center", fontsize=8)
-    for x0, x1 in [(2.4, 2.8), (5.2, 5.6), (7.8, 8.0)]:
-        ax.annotate("", xy=(x1, 2.4), xytext=(x0, 2.4),
-                    arrowprops=dict(arrowstyle="->", color="#333", lw=1.2))
+
 
     # B — summary
     ax = fig.add_subplot(gs[0, 1:3]); ax.axis("off")
