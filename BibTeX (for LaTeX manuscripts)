@@ -1,0 +1,26 @@
+@article{wang2025knockoffml,
+  author  = {Wang, Qi and Li, Linyan and Yang, Yi},
+  title   = {{Knockoff-ML}: a knockoff machine learning framework for controlled variable selection and risk stratification in electronic health record data},
+  journal = {npj Digital Medicine},
+  volume  = {8},
+  pages   = {723},
+  year    = {2025},
+  doi     = {10.1038/s41746-025-02102-2},
+  url     = {https://doi.org/10.1038/s41746-025-02102-2}
+}
+
+@software{knockoffml_github,
+  author       = {Wang, Qi},
+  title        = {Knockoff-ML},
+  year         = {2025},
+  url          = {https://github.com/keiwong493/Knockoff-ML},
+  note         = {Accessed: 2026-07-14}
+}
+
+@software{knockofftb_github,
+  author       = {[Your Name]},
+  title        = {Knockoff-TB},
+  year         = {2026},
+  url          = {https://github.com/[your-username]/[your-repo]},
+  note         = {Adaptation of Knockoff-ML for M. tuberculosis CRyPTIC data}
+}
