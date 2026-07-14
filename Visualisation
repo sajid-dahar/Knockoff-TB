@@ -1,0 +1,276 @@
+# =============================================================================
+# FIGURE 1 — Google Colab (self-contained, copy this entire file into Colab)
+# =============================================================================
+# Cell 1:
+#   !pip install -q umap-learn pandas matplotlib seaborn scikit-learn
+#
+# Cell 2: paste / upload this script, edit DATA_ROOT, then run:
+#   exec(open("colab_figure1.py").read())
+#   # or: %run colab_figure1.py
+# =============================================================================
+
+from __future__ import annotations
+
+import json
+import warnings
+from pathlib import Path
+
+import matplotlib.gridspec as gridspec
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import umap
+from sklearn.decomposition import PCA
+
+warnings.filterwarnings("ignore")
+sns.set_theme(style="whitegrid", context="paper", font_scale=1.0)
+
+# ── PATHS (edit for Colab) ────────────────────────────────────────────────────
+DATA_ROOT = Path("/content")  # CSVs in /content after upload
+# DATA_ROOT = Path("/content/drive/MyDrive/TB analysis")  # or Google Drive
+
+GAM_TRAIN_CSV = DATA_ROOT / "GAM_train.csv"
+Y_TRAIN_CSV   = DATA_ROOT / "Y9_train.csv"
+Y_TEST_CSV    = DATA_ROOT / "Y_test.csv"
+GENOMES_CSV   = DATA_ROOT / "GENOMES.csv"
+OUT_DIR       = Path("/content/figure1_outputs")
+ID_COL        = "ID"
+
+# Panel G: 7 drugs — AMIKACIN replaces LEVOFLOXACIN
+DRUG_UMAP_DRUGS = [
+    "ISONIAZID",     # INH
+    "RIFAMPICIN",    # RIF
+    "ETHAMBUTOL",    # EMB
+    "ETHIONAMIDE",   # ETH
+    "MOXIFLOXACIN",  # MOX
+    "KANAMYCIN",     # KAN
+    "AMIKACIN",      # AMI  (not LEVOFLOXACIN)
+]
+DRUG_SHORT = {
+    "AMIKACIN": "AMI", "ETHAMBUTOL": "EMB", "ETHIONAMIDE": "ETH",
+    "ISONIAZID": "INH", "KANAMYCIN": "KAN", "LEVOFLOXACIN": "LEV",
+    "MOXIFLOXACIN": "MOX", "RIFAMPICIN": "RIF",
+}
+
+N_PCA, N_NEIGHBORS, MIN_DIST, RANDOM_STATE = 20, 30, 0.1, 2025
+
+
+# ── Load data ─────────────────────────────────────────────────────────────────
+def load_data():
+    print("pd.read_csv():")
+    for p in [GAM_TRAIN_CSV, Y_TRAIN_CSV, Y_TEST_CSV, GENOMES_CSV]:
+        print(f"  {p}")
+
+    gam = pd.read_csv(GAM_TRAIN_CSV)
+    y_train = pd.read_csv(Y_TRAIN_CSV)
+    y_test = pd.read_csv(Y_TEST_CSV)
+
+    if ID_COL not in gam.columns and "UNIQUEID" in gam.columns:
+        gam = gam.rename(columns={"UNIQUEID": ID_COL})
+    if ID_COL not in y_train.columns and "UNIQUEID" in y_train.columns:
+        y_train = y_train.rename(columns={"UNIQUEID": ID_COL})
+
+    gam[ID_COL] = gam[ID_COL].astype(str)
+    y_train[ID_COL] = y_train[ID_COL].astype(str)
+
+    feat_cols = [c for c in gam.columns if c != ID_COL]
+    x_df = gam[feat_cols].fillna(0).astype(float)
+    x = x_df.values
+
+    meta = gam[[ID_COL]].merge(y_train, on=ID_COL, how="left")
+    drug_cols = [c for c in y_train.columns if c != ID_COL]
+
+    if GENOMES_CSV.exists():
+        genomes = pd.read_csv(
+            GENOMES_CSV, usecols=["UNIQUEID", "LINEAGE_NAME", "TB_TYPE_1"], low_memory=False
+        )
+        genomes = genomes.rename(columns={"UNIQUEID": ID_COL})
+        genomes[ID_COL] = genomes[ID_COL].astype(str)
+        genomes = genomes.drop_duplicates(subset=[ID_COL])
+        meta = meta.merge(genomes, on=ID_COL, how="left")
+    else:
+        meta["LINEAGE_NAME"] = "Unknown"
+        meta["TB_TYPE_1"] = "Unknown"
+
+    meta["mutation_burden"] = x_df.sum(axis=1)
+    meta["LINEAGE_NAME"] = meta["LINEAGE_NAME"].fillna("Unknown")
+    meta["TB_TYPE_1"] = meta["TB_TYPE_1"].fillna("Unknown")
+
+    if meta["TB_TYPE_1"].ne("Unknown").any():
+        meta["tb_phenotype"] = meta["TB_TYPE_1"].replace(
+            {"UNK": "Unknown", "SUS": "Susceptible", "DS": "Drug-susceptible"}
+        )
+    else:
+        n_res = meta[drug_cols].fillna(0).sum(axis=1)
+        meta["tb_phenotype"] = pd.cut(
+            n_res, bins=[-0.5, 0.5, 2.5, 5.5, 100],
+            labels=["Pan-susceptible", "Mono-R", "Poly-R", "MDR-like"],
+        ).astype(str)
+
+    sparsity = float((x.size - x.sum()) / x.size * 100)
+    resistance_prev = y_train[drug_cols].mean().sort_values(ascending=False)
+
+    return {
+        "x": x, "x_df": x_df, "meta": meta, "drug_cols": drug_cols,
+        "feat_cols": feat_cols, "resistance_prev": resistance_prev,
+        "n_train": len(gam), "n_test": len(y_test), "sparsity": sparsity,
+    }
+
+
+def compute_umap(x, n_pca=20, n_neighbors=30, min_dist=0.1, seed=2025):
+    n_pca = min(n_pca, x.shape[1], x.shape[0] - 1)
+    x_pca = PCA(n_components=n_pca, random_state=seed).fit_transform(x)
+    emb = umap.UMAP(
+        n_neighbors=n_neighbors, min_dist=min_dist, n_components=2,
+        metric="euclidean", random_state=seed,
+    ).fit_transform(x_pca)
+    return emb, n_pca
+
+
+def scatter_umap(ax, emb, values, categorical=False, cmap="coolwarm"):
+    if categorical:
+        codes = pd.Series(values).astype("category").cat.codes.to_numpy()
+        names = pd.Series(values).astype("category").cat.categories.tolist()
+        ax.scatter(emb[:, 0], emb[:, 1], c=codes, cmap="tab10", s=8, alpha=0.75, linewidths=0)
+        if len(names) <= 12:
+            handles = [
+                plt.Line2D([0], [0], marker="o", color="w",
+                           markerfacecolor=plt.cm.tab10(i / max(len(names), 1)),
+                           markersize=6, label=names[i])
+                for i in range(len(names))
+            ]
+            ax.legend(handles=handles, fontsize=6, loc="best")
+    else:
+        sc = ax.scatter(emb[:, 0], emb[:, 1], c=values, cmap=cmap, s=8, alpha=0.75, linewidths=0)
+        plt.colorbar(sc, ax=ax, fraction=0.03, pad=0.01)
+    ax.set_xlabel("UMAP 1")
+    ax.set_ylabel("UMAP 2")
+
+
+def make_figure(data, emb, n_pca, out_dir):
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    meta = data["meta"]
+
+    pd.DataFrame({
+        ID_COL: meta[ID_COL], "UMAP1": emb[:, 0], "UMAP2": emb[:, 1],
+        "tb_phenotype": meta["tb_phenotype"],
+    }).to_csv(out_dir / "figure1_umap_coords.csv", index=False)
+
+    fig = plt.figure(figsize=(18, 16), dpi=200)
+    gs = gridspec.GridSpec(5, 3, figure=fig,
+                           height_ratios=[0.55, 2.4, 1.0, 0.12, 1.55],
+                           hspace=0.38, wspace=0.32)
+
+    # A — workflow
+    ax = fig.add_subplot(gs[0, 0])
+    ax.set_xlim(0, 10); ax.set_ylim(0, 4); ax.axis("off")
+    ax.set_title("A  Study workflow", loc="left", fontweight="bold", fontsize=11)
+    for x, y, w, h, lbl in [
+        (0.2, 1.8, 2.2, 1.2, "CryPTIC\nWGS"),
+        (2.8, 1.8, 2.4, 1.2, "Binary mutation\nmatrix (0/1)"),
+        (5.6, 1.8, 2.2, 1.2, "Drug\nphenotypes"),
+        (8.0, 1.8, 1.8, 1.2, "Knockoff-\nML"),
+    ]:
+        ax.add_patch(plt.Rectangle((x, y), w, h, facecolor="#E8F0FE", edgecolor="#3366CC", lw=1.2))
+        ax.text(x + w / 2, y + h / 2, lbl, ha="center", va="center", fontsize=8)
+    for x0, x1 in [(2.4, 2.8), (5.2, 5.6), (7.8, 8.0)]:
+        ax.annotate("", xy=(x1, 2.4), xytext=(x0, 2.4),
+                    arrowprops=dict(arrowstyle="->", color="#333", lw=1.2))
+
+    # B — summary
+    ax = fig.add_subplot(gs[0, 1:3]); ax.axis("off")
+    ax.set_title("B  Dataset summary", loc="left", fontweight="bold", fontsize=11)
+    rows = [
+        ["Training isolates", f"{data['n_train']:,}"],
+        ["Test isolates", f"{data['n_test']:,}"],
+        ["Mutation features", f"{len(data['feat_cols'])} (GAM panel)"],
+        ["Encoding", "0 = absent, 1 = present (haploid)"],
+        ["Matrix sparsity", f"{data['sparsity']:.1f}% zeros"],
+        ["Mean mutation burden", f"{meta['mutation_burden'].mean():.2f} / isolate"],
+        ["Panel G drugs", ", ".join(DRUG_SHORT.get(d, d) for d in DRUG_UMAP_DRUGS)],
+    ]
+    tbl = ax.table(cellText=rows, colLabels=["Metric", "Value"], loc="center", cellLoc="left")
+    tbl.auto_set_font_size(False); tbl.set_fontsize(9); tbl.scale(1.0, 1.5)
+
+    # C — UMAP TB phenotype
+    ax = fig.add_subplot(gs[1, :])
+    scatter_umap(ax, emb, meta["tb_phenotype"], categorical=True)
+    ax.set_title("C  UMAP coloured by TB phenotype", loc="left", fontweight="bold", fontsize=11)
+
+    # D — lineage
+    ax = fig.add_subplot(gs[2, 0])
+    lc = meta["LINEAGE_NAME"].value_counts().head(8)
+    ax.barh(range(len(lc)), lc.values, color=sns.color_palette("Set2", len(lc)),
+            edgecolor="black", linewidth=0.5)
+    ax.set_yticks(range(len(lc))); ax.set_yticklabels(lc.index, fontsize=8)
+    ax.invert_yaxis(); ax.set_xlabel("Isolates")
+    ax.set_title("D  Lineage", loc="left", fontweight="bold", fontsize=10)
+
+    # E — drug prevalence (short labels; AMI shown, LEV omitted from panel G only)
+    ax = fig.add_subplot(gs[2, 1])
+    prev = (data["resistance_prev"] * 100).sort_values(ascending=True)
+    labels = [DRUG_SHORT.get(d, d[:6]) for d in prev.index]
+    ax.barh(labels, prev.values, color="#4C72B0", edgecolor="black", linewidth=0.5)
+    ax.set_xlabel("% resistant")
+    ax.set_title("E  Drug prevalence", loc="left", fontweight="bold", fontsize=10)
+
+    # F — mutation burden
+    ax = fig.add_subplot(gs[2, 2])
+    mb = int(meta["mutation_burden"].max())
+    ax.hist(meta["mutation_burden"], bins=range(0, mb + 2),
+            color="#55A868", edgecolor="black", linewidth=0.5)
+    ax.set_xlabel("Catalog mutations / isolate"); ax.set_ylabel("Count")
+    ax.set_title("F  Mutation burden", loc="left", fontweight="bold", fontsize=10)
+
+    # G — drug UMAP grid (AMI not LEV)
+    ax = fig.add_subplot(gs[3, :]); ax.axis("off")
+    ax.set_title("G  Drug-specific UMAP overview", loc="left", fontweight="bold", fontsize=11, pad=2)
+
+    drugs = [d for d in DRUG_UMAP_DRUGS if d in meta.columns]
+    ncols, nrows = min(4, len(drugs)), int(np.ceil(len(drugs) / min(4, len(drugs))))
+    sub = gs[4, :].subgridspec(nrows, ncols, hspace=0.45, wspace=0.25)
+    for k, drug in enumerate(drugs):
+        r, c = divmod(k, ncols)
+        ax = fig.add_subplot(sub[r, c])
+        vals = meta[drug].fillna(-1).to_numpy()
+        ax.scatter(emb[:, 0], emb[:, 1], c=vals, cmap="coolwarm", vmin=0, vmax=1,
+                   s=5, alpha=0.7, linewidths=0)
+        short = DRUG_SHORT.get(drug, drug)
+        pct = 100 * (vals == 1).sum() / len(vals)
+        ax.set_title(f"{short}\n({pct:.1f}% R)", fontsize=8)
+        ax.set_xticks([]); ax.set_yticks([])
+        if k == 0: ax.set_ylabel("UMAP 2", fontsize=7)
+        if r == nrows - 1: ax.set_xlabel("UMAP 1", fontsize=7)
+
+    fig.suptitle("Figure 1. CRyPTIC cohort structure and mutation-space embedding",
+                 fontsize=14, fontweight="bold", y=0.995)
+    fig.savefig(out_dir / "figure1_phenotype_layout.png", bbox_inches="tight", facecolor="white")
+    fig.savefig(out_dir / "figure1_phenotype_layout.pdf", bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+    stats = {
+        "panel_g_drugs": [DRUG_SHORT.get(d, d) for d in drugs],
+        "n_train": data["n_train"], "n_pca": n_pca,
+        "sparsity_pct": data["sparsity"],
+        "prevalence_pct": {DRUG_SHORT.get(k, k): round(v * 100, 2)
+                           for k, v in data["resistance_prev"].items()},
+    }
+    with open(out_dir / "figure1_panel_stats.json", "w") as f:
+        json.dump(stats, f, indent=2)
+    return stats
+
+
+# ── Run ───────────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    data = load_data()
+    emb, n_pca = compute_umap(data["x"], N_PCA, N_NEIGHBORS, MIN_DIST, RANDOM_STATE)
+    stats = make_figure(data, emb, n_pca, OUT_DIR)
+    print(json.dumps(stats, indent=2))
+    print(f"\nSaved → {OUT_DIR / 'figure1_phenotype_layout.png'}")
+    try:
+        from IPython.display import Image, display
+        display(Image(filename=str(OUT_DIR / "figure1_phenotype_layout.png")))
+    except ImportError:
+        pass
